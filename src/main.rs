@@ -116,7 +116,7 @@ async fn create_topic(
         return "Missing Topic Name".into_response();
     };
 
-    let arn = format!("arn:aws:sns:us-east-1:123456789012:{}", name);
+    let arn = format!("arn:aws:sns:local:000000000000:{}", name);
     let topic = Topic {
         name: name.clone(),
         arn: arn.clone(),
