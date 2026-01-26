@@ -23,6 +23,7 @@ pub async fn handle_aws_request(
         "Subscribe" => subscribe(State(state), params).await,
         "Unsubscribe" => unsubscribe(State(state), params).await,
         "Publish" => publish(State(state), params).await,
+        "GetTopicAttributes" => get_topic_attributes(State(state), params).await,
         _ => error_response("InvalidAction", "Action not supported", StatusCode::BAD_REQUEST).await,
     }
 }
@@ -37,7 +38,7 @@ pub async fn create_topic(
         return error_response("InvalidParameter", "Missing Topic Name", StatusCode::BAD_REQUEST).await;
     };
 
-    let arn = format!("arn:aws:sns:local:000000000000:{}", name);
+    let arn = format!("arn:aws:sns:us-east-1:000000000000:{}", name);
     let topic = Topic {
         name: name.clone(),
         arn: arn.clone(),
@@ -130,6 +131,76 @@ pub async fn list_topics(
                             Ok(())
                         })?;
                     writer.create_element("NextToken").write_text_content(BytesText::new(""))?;
+                    Ok(())
+                })?;
+            writer.create_element("ResponseMetadata")
+                .write_inner_content(|writer| {
+                    writer.create_element("RequestId").write_text_content(BytesText::new(&Uuid::new_v4().to_string()))?;
+                    Ok(())
+                })?;
+            Ok(())
+        }).unwrap();
+
+    let xml_response = writer.into_inner().into_inner();
+    Response::builder()
+        .header("Content-Type", "application/xml")
+        .body(axum::body::Body::from(xml_response))
+        .unwrap()
+}
+
+
+pub async fn get_topic_attributes(
+    State(state): State<SharedState>,
+    params: SnsRequest,
+) -> Response {
+    let topic_arn = if let Some(topic_arn) = params.topic_arn {
+        topic_arn
+    } else {
+        return error_response("InvalidParameter", "Missing Topic ARN", StatusCode::BAD_REQUEST).await;
+    };
+
+    let topic_name = topic_arn.split(':').last().unwrap_or_default();
+
+    let topic = if let Some(topic) = state.topics.get(topic_name) {
+        topic
+    } else {
+        return error_response("NotFound", "Topic not found", StatusCode::NOT_FOUND).await;
+    };
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer.create_element("GetTopicAttributesResponse")
+        .with_attribute(("xmlns", "https://sns.amazonaws.com/doc/2010-03-31/"))
+        .write_inner_content(|writer| {
+            writer.create_element("GetTopicAttributesResult")
+                .write_inner_content(|writer| {
+                    writer.create_element("Attributes")
+                        .write_inner_content(|writer| {
+                            writer.create_element("entry")
+                                .write_inner_content(|writer| {
+                                    writer.create_element("key").write_text_content(BytesText::new("TopicArn"))?;
+                                    writer.create_element("value").write_text_content(BytesText::new(&topic.arn))?;
+                                    Ok(())
+                                })?;
+                            writer.create_element("entry")
+                                .write_inner_content(|writer| {
+                                    writer.create_element("key").write_text_content(BytesText::new("SubscriptionsConfirmed"))?;
+                                    writer.create_element("value").write_text_content(BytesText::new(topic.subscriptions.len().to_string().as_str()))?;
+                                    Ok(())
+                                })?;
+                            writer.create_element("entry")
+                                .write_inner_content(|writer| {
+                                    writer.create_element("key").write_text_content(BytesText::new("SubscriptionsPending"))?;
+                                    writer.create_element("value").write_text_content(BytesText::new("0"))?;
+                                    Ok(())
+                                })?;
+                            writer.create_element("entry")
+                                .write_inner_content(|writer| {
+                                    writer.create_element("key").write_text_content(BytesText::new("SubscriptionsDeleted"))?;
+                                    writer.create_element("value").write_text_content(BytesText::new("0"))?;
+                                    Ok(())
+                                })?;
+                            Ok(())
+                        })?;
                     Ok(())
                 })?;
             writer.create_element("ResponseMetadata")

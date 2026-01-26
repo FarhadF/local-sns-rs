@@ -70,3 +70,25 @@ pub struct PublishResponse {
 pub struct PublishResult {
     pub message_id: String,
 }
+
+#[derive(Debug)]
+pub struct GetTopicAttributesResponse {
+    pub get_topic_attributes_result: GetTopicAttributesResult,
+    pub response_metadata: ResponseMetadata,
+}
+
+#[derive(Debug, Default)]
+pub struct GetTopicAttributesResult {
+    pub attributes: Attributes,
+}
+
+#[derive(Debug, Default)]
+pub struct Attributes {
+    pub entry: Vec<Entry>,
+}
+
+#[derive(Debug)]
+pub struct Entry {
+    pub key: String,
+    pub value: String,
+}
