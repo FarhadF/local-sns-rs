@@ -1,5 +1,6 @@
 use axum::extract::Form;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use axum::routing::post;
@@ -292,7 +293,7 @@ async fn subscribe(
     let topic_arn = if let Some(topic_arn) = params.topic_arn {
         topic_arn
     } else {
-        return "Missing Topic ARN".into_response();
+        return error_response("InvalidParameter", "Missing Topic ARN", StatusCode::BAD_REQUEST).await;
     };
 
     let topic_name = topic_arn.split(':').last().unwrap_or_default();
@@ -300,13 +301,13 @@ async fn subscribe(
     let endpoint = if let Some(endpoint) = params.endpoint {
         endpoint
     } else {
-        return "Missing endpoint".into_response();
+        return error_response("InvalidParameter", "Missing endpoint", StatusCode::BAD_REQUEST).await;
     };
 
     let protocol = if let Some(protocol) = params.protocol {
         protocol
     } else {
-        return "Missing protocol".into_response();
+        return error_response("InvalidParameter", "Missing protocol", StatusCode::BAD_REQUEST).await;
     };
 
     let subscription_arn = format!("{}:{}", topic_arn, Uuid::new_v4());
@@ -321,7 +322,7 @@ async fn subscribe(
     let mut topic = if let Some(mut topic) = state.topics.get_mut(topic_name) {
         topic
     } else {
-        return "Topic not found".into_response();
+        return error_response("NotFound", "Topic not found", StatusCode::NOT_FOUND).await;
     };
 
     topic.subscriptions.push(subscription);
@@ -357,7 +358,7 @@ async fn unsubscribe(
     let subscription_arn = if let Some(subscription_arn) = params.subscription_arn {
         subscription_arn
     } else {
-        return "Missing Subscription ARN".into_response();
+        return error_response("InvalidParameter", "Missing Subscription ARN", StatusCode::BAD_REQUEST).await;
     };
 
     let topic_arn = subscription_arn.rsplitn(2, ':').nth(1).unwrap_or_default();
@@ -366,7 +367,7 @@ async fn unsubscribe(
     let mut topic = if let Some(mut topic) = state.topics.get_mut(topic_name) {
         topic
     } else {
-        return "Topic not found".into_response();
+        return error_response("NotFound", "Topic not found", StatusCode::NOT_FOUND).await;
     };
 
     topic.subscriptions.retain(|s| s.subscription_arn != subscription_arn);
@@ -385,6 +386,31 @@ async fn unsubscribe(
 
     let xml_response = writer.into_inner().into_inner();
     Response::builder()
+        .header("Content-Type", "application/xml")
+        .body(axum::body::Body::from(xml_response))
+        .unwrap()
+}
+
+async fn error_response(code: &str, message: &str, status_code: StatusCode) -> Response {
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer
+        .create_element("ErrorResponse")
+        .with_attribute(("xmlns", "http://sns.amazonaws.com/doc/2010-03-31/"))
+        .write_inner_content(|writer| {
+            writer.create_element("Error").write_inner_content(|writer| {
+                writer.create_element("Type").write_text_content(BytesText::new("Sender"))?;
+                writer.create_element("Code").write_text_content(BytesText::new(code))?;
+                writer.create_element("Message").write_text_content(BytesText::new(message))?;
+                Ok(())
+            })?;
+            writer.create_element("RequestId").write_text_content(BytesText::new(&Uuid::new_v4().to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+
+    let xml_response = writer.into_inner().into_inner();
+    Response::builder()
+        .status(status_code)
         .header("Content-Type", "application/xml")
         .body(axum::body::Body::from(xml_response))
         .unwrap()
@@ -420,6 +446,8 @@ async fn publish(
         for subscription in &topic.subscriptions {
             tracing::info!("Sending message {:?} to endpoint {}", message, subscription.endpoint);
         }
+    } else {
+        return error_response("NotFound", "Topic does not exist", StatusCode::NOT_FOUND).await;
     }
 
     let mut writer = Writer::new(Cursor::new(Vec::new()));
