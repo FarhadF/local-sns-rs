@@ -12,7 +12,10 @@ use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber;
+use url::Url;
 use uuid::Uuid;
+use aws_config;
+use aws_sdk_sqs;
 
 // 1. Core Data Structures
 #[derive(Debug, Clone)]
@@ -438,13 +441,35 @@ async fn publish(
     let message = Message {
         id: message_id.clone(),
         subject: params.subject,
-        body: message_body,
+        body: message_body.clone(),
         timestamp: chrono::Utc::now(),
     };
 
     if let Some(topic) = state.topics.get(topic_name) {
         for subscription in &topic.subscriptions {
-            tracing::info!("Sending message {:?} to endpoint {}", message, subscription.endpoint);
+            if subscription.protocol == "sqs" {
+                let queue_url = subscription.endpoint.clone();
+                let endpoint_url = if let Ok(url) = Url::parse(&queue_url) {
+                    format!("{}://{}:{}", url.scheme(), url.host_str().unwrap_or_default(), url.port().unwrap_or(4566))
+                } else {
+                    "http://localhost:4566".to_string()
+                };
+
+                let config = aws_config::from_env().endpoint_url(endpoint_url).load().await;
+                let sqs_client = aws_sdk_sqs::Client::new(&config);
+
+                match sqs_client
+                    .send_message()
+                    .queue_url(queue_url.clone())
+                    .message_body(&message_body)
+                    .send()
+                    .await {
+                    Ok(_) => tracing::info!("Message sent to SQS queue: {}", queue_url),
+                    Err(e) => tracing::error!("Failed to send message to SQS queue: {}, error: {}", queue_url, e),
+                }
+            } else {
+                tracing::info!("Sending message {:?} to endpoint {}", message, subscription.endpoint);
+            }
         }
     } else {
         return error_response("NotFound", "Topic does not exist", StatusCode::NOT_FOUND).await;
