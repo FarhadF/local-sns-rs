@@ -44,6 +44,7 @@ struct Message {
 // 2. In-Memory Storage
 struct AppState {
     topics: DashMap<String, Topic>,
+    sqs_clients: DashMap<String, Arc<aws_sdk_sqs::Client>>,
 }
 
 type SharedState = Arc<AppState>;
@@ -140,6 +141,7 @@ struct PublishResult {
 async fn main() {
     let shared_state = Arc::new(AppState {
         topics: DashMap::new(),
+        sqs_clients: DashMap::new(),
     });
 
     tracing_subscriber::fmt::init();
@@ -455,8 +457,14 @@ async fn publish(
                     "http://localhost:4566".to_string()
                 };
 
-                let config = aws_config::from_env().endpoint_url(endpoint_url).load().await;
-                let sqs_client = aws_sdk_sqs::Client::new(&config);
+                let sqs_client = if let Some(client) = state.sqs_clients.get(&endpoint_url) {
+                    client.clone()
+                } else {
+                    let config = aws_config::from_env().endpoint_url(endpoint_url.clone()).load().await;
+                    let client = Arc::new(aws_sdk_sqs::Client::new(&config));
+                    state.sqs_clients.insert(endpoint_url.clone(), client.clone());
+                    client
+                };
 
                 match sqs_client
                     .send_message()
