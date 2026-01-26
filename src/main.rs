@@ -26,6 +26,7 @@ struct Subscription {
     endpoint: String,
     protocol: String,
     arn: String,
+    subscription_arn: String,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +51,11 @@ struct SnsRequest {
     action: String,
     name: Option<String>,
     topic_arn: Option<String>,
+    endpoint: Option<String>,
+    protocol: Option<String>,
+    subscription_arn: Option<String>,
+    message: Option<String>,
+    subject: Option<String>,
 }
 
 // CreateTopic
@@ -98,6 +104,33 @@ struct Member {
     topic_arn: String,
 }
 
+#[derive(Debug)]
+struct SubscribeResponse {
+    subscribe_result: SubscribeResult,
+    response_metadata: ResponseMetadata,
+}
+
+#[derive(Debug)]
+struct SubscribeResult {
+    subscription_arn: String,
+}
+
+#[derive(Debug)]
+struct UnsubscribeResponse {
+    response_metadata: ResponseMetadata,
+}
+
+#[derive(Debug)]
+struct PublishResponse {
+    publish_result: PublishResult,
+    response_metadata: ResponseMetadata,
+}
+
+#[derive(Debug)]
+struct PublishResult {
+    message_id: String,
+}
+
 
 #[tokio::main]
 async fn main() {
@@ -125,6 +158,9 @@ async fn handle_aws_request(
         "CreateTopic" => create_topic(State(state), params).await,
         "DeleteTopic" => delete_topic(State(state), params).await,
         "ListTopics" => list_topics(State(state)).await,
+        "Subscribe" => subscribe(State(state), params).await,
+        "Unsubscribe" => unsubscribe(State(state), params).await,
+        "Publish" => publish(State(state), params).await,
         _ => "Action not supported".into_response(),
     }
 }
@@ -232,6 +268,167 @@ async fn list_topics(
                             Ok(())
                         })?;
                     writer.create_element("NextToken").write_text_content(BytesText::new(""))?;
+                    Ok(())
+                })?;
+            writer.create_element("ResponseMetadata")
+                .write_inner_content(|writer| {
+                    writer.create_element("RequestId").write_text_content(BytesText::new(&Uuid::new_v4().to_string()))?;
+                    Ok(())
+                })?;
+            Ok(())
+        }).unwrap();
+
+    let xml_response = writer.into_inner().into_inner();
+    Response::builder()
+        .header("Content-Type", "application/xml")
+        .body(axum::body::Body::from(xml_response))
+        .unwrap()
+}
+
+async fn subscribe(
+    State(state): State<SharedState>,
+    params: SnsRequest,
+) -> Response {
+    let topic_arn = if let Some(topic_arn) = params.topic_arn {
+        topic_arn
+    } else {
+        return "Missing Topic ARN".into_response();
+    };
+
+    let topic_name = topic_arn.split(':').last().unwrap_or_default();
+
+    let endpoint = if let Some(endpoint) = params.endpoint {
+        endpoint
+    } else {
+        return "Missing endpoint".into_response();
+    };
+
+    let protocol = if let Some(protocol) = params.protocol {
+        protocol
+    } else {
+        return "Missing protocol".into_response();
+    };
+
+    let subscription_arn = format!("{}:{}", topic_arn, Uuid::new_v4());
+
+    let subscription = Subscription {
+        endpoint,
+        protocol,
+        arn: topic_arn.clone(),
+        subscription_arn: subscription_arn.clone(),
+    };
+
+    let mut topic = if let Some(mut topic) = state.topics.get_mut(topic_name) {
+        topic
+    } else {
+        return "Topic not found".into_response();
+    };
+
+    topic.subscriptions.push(subscription);
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer.create_element("SubscribeResponse")
+        .with_attribute(("xmlns", "https://sns.amazonaws.com/doc/2010-03-31/"))
+        .write_inner_content(|writer| {
+            writer.create_element("SubscribeResult")
+                .write_inner_content(|writer| {
+                    writer.create_element("SubscriptionArn").write_text_content(BytesText::new(&subscription_arn))?;
+                    Ok(())
+                })?;
+            writer.create_element("ResponseMetadata")
+                .write_inner_content(|writer| {
+                    writer.create_element("RequestId").write_text_content(BytesText::new(&Uuid::new_v4().to_string()))?;
+                    Ok(())
+                })?;
+            Ok(())
+        }).unwrap();
+
+    let xml_response = writer.into_inner().into_inner();
+    Response::builder()
+        .header("Content-Type", "application/xml")
+        .body(axum::body::Body::from(xml_response))
+        .unwrap()
+}
+
+async fn unsubscribe(
+    State(state): State<SharedState>,
+    params: SnsRequest,
+) -> Response {
+    let subscription_arn = if let Some(subscription_arn) = params.subscription_arn {
+        subscription_arn
+    } else {
+        return "Missing Subscription ARN".into_response();
+    };
+
+    let topic_arn = subscription_arn.rsplitn(2, ':').nth(1).unwrap_or_default();
+    let topic_name = topic_arn.split(':').last().unwrap_or_default();
+
+    let mut topic = if let Some(mut topic) = state.topics.get_mut(topic_name) {
+        topic
+    } else {
+        return "Topic not found".into_response();
+    };
+
+    topic.subscriptions.retain(|s| s.subscription_arn != subscription_arn);
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer.create_element("UnsubscribeResponse")
+        .with_attribute(("xmlns", "https://sns.amazonaws.com/doc/2010-03-31/"))
+        .write_inner_content(|writer| {
+            writer.create_element("ResponseMetadata")
+                .write_inner_content(|writer| {
+                    writer.create_element("RequestId").write_text_content(BytesText::new(&Uuid::new_v4().to_string()))?;
+                    Ok(())
+                })?;
+            Ok(())
+        }).unwrap();
+
+    let xml_response = writer.into_inner().into_inner();
+    Response::builder()
+        .header("Content-Type", "application/xml")
+        .body(axum::body::Body::from(xml_response))
+        .unwrap()
+}
+
+async fn publish(
+    State(state): State<SharedState>,
+    params: SnsRequest,
+) -> Response {
+    let topic_arn = if let Some(topic_arn) = params.topic_arn {
+        topic_arn
+    } else {
+        return "Missing Topic ARN".into_response();
+    };
+
+    let topic_name = topic_arn.split(':').last().unwrap_or_default();
+
+    let message_body = if let Some(message) = params.message {
+        message
+    } else {
+        return "Missing message".into_response();
+    };
+
+    let message_id = Uuid::new_v4().to_string();
+    let message = Message {
+        id: message_id.clone(),
+        subject: params.subject,
+        body: message_body,
+        timestamp: chrono::Utc::now(),
+    };
+
+    if let Some(topic) = state.topics.get(topic_name) {
+        for subscription in &topic.subscriptions {
+            tracing::info!("Sending message {:?} to endpoint {}", message, subscription.endpoint);
+        }
+    }
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer.create_element("PublishResponse")
+        .with_attribute(("xmlns", "https://sns.amazonaws.com/doc/2010-03-31/"))
+        .write_inner_content(|writer| {
+            writer.create_element("PublishResult")
+                .write_inner_content(|writer| {
+                    writer.create_element("MessageId").write_text_content(BytesText::new(&message_id))?;
                     Ok(())
                 })?;
             writer.create_element("ResponseMetadata")
