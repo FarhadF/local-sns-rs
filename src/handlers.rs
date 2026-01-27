@@ -24,6 +24,7 @@ pub async fn handle_aws_request(
         "Unsubscribe" => unsubscribe(State(state), params).await,
         "Publish" => publish(State(state), params).await,
         "GetTopicAttributes" => get_topic_attributes(State(state), params).await,
+        "SetTopicAttributes" => set_topic_attributes(State(state), params).await,
         _ => error_response("InvalidAction", "Action not supported", StatusCode::BAD_REQUEST).await,
     }
 }
@@ -43,6 +44,10 @@ pub async fn create_topic(
         name: name.clone(),
         arn: arn.clone(),
         subscriptions: vec![],
+        display_name: None,
+        policy: None,
+        delivery_policy: None,
+        tracing_config: None,
     };
     state.topics.insert(name, topic);
 
@@ -149,6 +154,62 @@ pub async fn list_topics(
 }
 
 
+
+pub async fn set_topic_attributes(
+    State(state): State<SharedState>,
+    params: SnsRequest,
+) -> Response {
+    let topic_arn = if let Some(topic_arn) = params.topic_arn {
+        topic_arn
+    } else {
+        return error_response("InvalidParameter", "Missing Topic ARN", StatusCode::BAD_REQUEST).await;
+    };
+
+    let attribute_name = if let Some(attribute_name) = params.attribute_name {
+        attribute_name
+    } else {
+        return error_response("InvalidParameter", "Missing Attribute Name", StatusCode::BAD_REQUEST).await;
+    };
+
+    let attribute_value = if let Some(attribute_value) = params.attribute_value {
+        attribute_value
+    } else {
+        return error_response("InvalidParameter", "Missing Attribute Value", StatusCode::BAD_REQUEST).await;
+    };
+
+    let topic_name = topic_arn.split(':').last().unwrap_or_default();
+
+    if let Some(mut topic) = state.topics.get_mut(topic_name) {
+        match attribute_name.as_str() {
+            "DisplayName" => topic.display_name = Some(attribute_value),
+            "Policy" => topic.policy = Some(attribute_value),
+            "DeliveryPolicy" => topic.delivery_policy = Some(attribute_value),
+            "TracingConfig" => topic.tracing_config = Some(attribute_value),
+            _ => return error_response("InvalidParameter", "Attribute not supported", StatusCode::BAD_REQUEST).await,
+        }
+    } else {
+        return error_response("NotFound", "Topic not found", StatusCode::NOT_FOUND).await;
+    };
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer.create_element("SetTopicAttributesResponse")
+        .with_attribute(("xmlns", "https://sns.amazonaws.com/doc/2010-03-31/"))
+        .write_inner_content(|writer| {
+            writer.create_element("ResponseMetadata")
+                .write_inner_content(|writer| {
+                    writer.create_element("RequestId").write_text_content(BytesText::new(&Uuid::new_v4().to_string()))?;
+                    Ok(())
+                })?;
+            Ok(())
+        }).unwrap();
+
+    let xml_response = writer.into_inner().into_inner();
+    Response::builder()
+        .header("Content-Type", "application/xml")
+        .body(axum::body::Body::from(xml_response))
+        .unwrap()
+}
+
 pub async fn get_topic_attributes(
     State(state): State<SharedState>,
     params: SnsRequest,
@@ -181,6 +242,38 @@ pub async fn get_topic_attributes(
                                     writer.create_element("value").write_text_content(BytesText::new(&topic.arn))?;
                                     Ok(())
                                 })?;
+                            if let Some(display_name) = &topic.display_name {
+                                writer.create_element("entry")
+                                    .write_inner_content(|writer| {
+                                        writer.create_element("key").write_text_content(BytesText::new("DisplayName"))?;
+                                        writer.create_element("value").write_text_content(BytesText::new(display_name))?;
+                                        Ok(())
+                                    })?;
+                            }
+                            if let Some(policy) = &topic.policy {
+                                writer.create_element("entry")
+                                    .write_inner_content(|writer| {
+                                        writer.create_element("key").write_text_content(BytesText::new("Policy"))?;
+                                        writer.create_element("value").write_text_content(BytesText::new(policy))?;
+                                        Ok(())
+                                    })?;
+                            }
+                            if let Some(delivery_policy) = &topic.delivery_policy {
+                                writer.create_element("entry")
+                                    .write_inner_content(|writer| {
+                                        writer.create_element("key").write_text_content(BytesText::new("DeliveryPolicy"))?;
+                                        writer.create_element("value").write_text_content(BytesText::new(delivery_policy))?;
+                                        Ok(())
+                                    })?;
+                            }
+                             if let Some(tracing_config) = &topic.tracing_config {
+                                writer.create_element("entry")
+                                    .write_inner_content(|writer| {
+                                        writer.create_element("key").write_text_content(BytesText::new("TracingConfig"))?;
+                                        writer.create_element("value").write_text_content(BytesText::new(tracing_config))?;
+                                        Ok(())
+                                    })?;
+                            }
                             writer.create_element("entry")
                                 .write_inner_content(|writer| {
                                     writer.create_element("key").write_text_content(BytesText::new("SubscriptionsConfirmed"))?;
