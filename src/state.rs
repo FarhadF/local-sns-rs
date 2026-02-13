@@ -1,7 +1,7 @@
 use aws_sdk_sqs::Client;
 use dashmap::DashMap;
-use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::Deserialize;
+use serde::de::{self, Deserializer, MapAccess, Visitor};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;

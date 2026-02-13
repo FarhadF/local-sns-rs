@@ -5,8 +5,8 @@ mod state;
 
 use crate::handlers::handle_aws_request;
 use crate::state::AppState;
-use axum::routing::post;
 use axum::Router;
+use axum::routing::post;
 use dashmap::DashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -28,5 +28,7 @@ async fn main() {
     let addr = SocketAddr::from(([127, 0, 0, 1], 9911));
     tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app.into_make_service()).await.unwrap();
+    axum::serve(listener, app.into_make_service())
+        .await
+        .unwrap();
 }
