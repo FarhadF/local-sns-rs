@@ -29,8 +29,137 @@ pub async fn handle_aws_request(
         "ListTagsForResource" => list_tags_for_resource(State(state), params).await,
         "TagResource" => tag_resource(State(state), params).await,
         "UntagResource" => untag_resource(State(state), params).await,
+        "GetSubscriptionAttributes" => get_subscription_attributes(State(state), params).await,
+        "ListSubscriptionsByTopic" => list_subscriptions_by_topic(State(state), params).await,
         _ => error_response("InvalidAction", "Action not supported", StatusCode::BAD_REQUEST).await,
     }
+}
+
+pub async fn list_subscriptions_by_topic(
+    State(state): State<SharedState>,
+    params: SnsRequest,
+) -> Response {
+    let topic_arn = if let Some(topic_arn) = params.topic_arn {
+        topic_arn
+    } else {
+        return error_response("InvalidParameter", "Missing Topic ARN", StatusCode::BAD_REQUEST).await;
+    };
+
+    let topic_name = topic_arn.split(':').last().unwrap_or_default();
+
+    let subscriptions = if let Some(topic) = state.topics.get(topic_name) {
+        topic.subscriptions.clone()
+    } else {
+        return error_response("NotFound", "Topic not found", StatusCode::NOT_FOUND).await;
+    };
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer.create_element("ListSubscriptionsByTopicResponse")
+        .with_attribute(("xmlns", "https://sns.amazonaws.com/doc/2010-03-31/"))
+        .write_inner_content(|writer| {
+            writer.create_element("ListSubscriptionsByTopicResult")
+                .write_inner_content(|writer| {
+                    writer.create_element("Subscriptions")
+                        .write_inner_content(|writer| {
+                            for sub in subscriptions {
+                                writer.create_element("member")
+                                    .write_inner_content(|writer| {
+                                        writer.create_element("TopicArn").write_text_content(BytesText::new(&sub.arn))?;
+                                        writer.create_element("Protocol").write_text_content(BytesText::new(&sub.protocol))?;
+                                        writer.create_element("SubscriptionArn").write_text_content(BytesText::new(&sub.subscription_arn))?;
+                                        writer.create_element("Owner").write_text_content(BytesText::new("000000000000"))?;
+                                        writer.create_element("Endpoint").write_text_content(BytesText::new(&sub.endpoint))?;
+                                        Ok(())
+                                    })?;
+                            }
+                            Ok(())
+                        })?;
+                    // Pagination is not implemented, so NextToken is empty or omitted
+                    // writer.create_element("NextToken").write_text_content(BytesText::new(""))?; 
+                    Ok(())
+                })?;
+            writer.create_element("ResponseMetadata")
+                .write_inner_content(|writer| {
+                    writer.create_element("RequestId").write_text_content(BytesText::new(&Uuid::new_v4().to_string()))?;
+                    Ok(())
+                })?;
+            Ok(())
+        }).unwrap();
+
+    let xml_response = writer.into_inner().into_inner();
+    Response::builder()
+        .header("Content-Type", "application/xml")
+        .body(axum::body::Body::from(xml_response))
+        .unwrap()
+}
+
+pub async fn get_subscription_attributes(
+    State(state): State<SharedState>,
+    params: SnsRequest,
+) -> Response {
+    let subscription_arn = if let Some(subscription_arn) = params.subscription_arn {
+        subscription_arn
+    } else {
+        return error_response("InvalidParameter", "Missing Subscription ARN", StatusCode::BAD_REQUEST).await;
+    };
+
+    let mut found_subscription = None;
+    for topic in state.topics.iter() {
+        if let Some(sub) = topic.subscriptions.iter().find(|s| s.subscription_arn == subscription_arn) {
+            found_subscription = Some(sub.clone());
+            break;
+        }
+    }
+
+    let subscription = if let Some(sub) = found_subscription {
+        sub
+    } else {
+        return error_response("NotFound", "Subscription not found", StatusCode::NOT_FOUND).await;
+    };
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer.create_element("GetSubscriptionAttributesResponse")
+        .with_attribute(("xmlns", "https://sns.amazonaws.com/doc/2010-03-31/"))
+        .write_inner_content(|writer| {
+            writer.create_element("GetSubscriptionAttributesResult")
+                .write_inner_content(|writer| {
+                    writer.create_element("Attributes")
+                        .write_inner_content(|writer| {
+                            let attributes = vec![
+                                ("SubscriptionArn", subscription.subscription_arn.as_str()),
+                                ("TopicArn", subscription.arn.as_str()),
+                                ("Owner", "000000000000"),
+                                ("ConfirmationWasAuthenticated", "true"),
+                                ("PendingConfirmation", "false"),
+                                ("Protocol", subscription.protocol.as_str()),
+                                ("Endpoint", subscription.endpoint.as_str()),
+                            ];
+
+                            for (key, value) in attributes {
+                                writer.create_element("entry")
+                                    .write_inner_content(|writer| {
+                                        writer.create_element("key").write_text_content(BytesText::new(key))?;
+                                        writer.create_element("value").write_text_content(BytesText::new(value))?;
+                                        Ok(())
+                                    })?;
+                            }
+                            Ok(())
+                        })?;
+                    Ok(())
+                })?;
+            writer.create_element("ResponseMetadata")
+                .write_inner_content(|writer| {
+                    writer.create_element("RequestId").write_text_content(BytesText::new(&Uuid::new_v4().to_string()))?;
+                    Ok(())
+                })?;
+            Ok(())
+        }).unwrap();
+
+    let xml_response = writer.into_inner().into_inner();
+    Response::builder()
+        .header("Content-Type", "application/xml")
+        .body(axum::body::Body::from(xml_response))
+        .unwrap()
 }
 
 pub async fn list_tags_for_resource(
